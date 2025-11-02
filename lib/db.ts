@@ -2,6 +2,8 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { cosine } from './vector';
+
 const DB_DIRECTORY = path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DB_DIRECTORY, 'app.db');
 
@@ -383,15 +385,20 @@ export function searchTopK(queryEmbedding: Float32Array | number[], k: number): 
   }
 
   const queryVector = toFloat32Array(queryEmbedding);
-  const queryNorm = vectorNorm(queryVector);
-  if (queryNorm === 0) {
+  let queryMagnitude = 0;
+  for (let i = 0; i < queryVector.length; i += 1) {
+    const value = queryVector[i];
+    queryMagnitude += value * value;
+  }
+
+  if (queryMagnitude === 0) {
     return [];
   }
 
   const rows = listChunksForSearchStmt.all();
   const scored = rows.map((row) => {
     const vector = deserializeEmbedding(row.embedding);
-    const similarity = cosineSimilarity(queryVector, vector, queryNorm);
+    const similarity = cosine(queryVector, vector);
     return {
       chunkId: row.id,
       documentId: row.document_id,
@@ -601,31 +608,5 @@ function serializeEmbedding(vector: Float32Array): Buffer {
 function deserializeEmbedding(buffer: Buffer): Float32Array {
   const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
   return new Float32Array(arrayBuffer);
-}
-
-function vectorNorm(vector: Float32Array): number {
-  let sumSquares = 0;
-  for (let i = 0; i < vector.length; i += 1) {
-    const value = vector[i];
-    sumSquares += value * value;
-  }
-  return Math.sqrt(sumSquares);
-}
-
-function dotProduct(a: Float32Array, b: Float32Array): number {
-  const length = Math.min(a.length, b.length);
-  let sum = 0;
-  for (let i = 0; i < length; i += 1) {
-    sum += a[i] * b[i];
-  }
-  return sum;
-}
-
-function cosineSimilarity(query: Float32Array, target: Float32Array, queryNorm?: number): number {
-  const denominator = (queryNorm ?? vectorNorm(query)) * vectorNorm(target);
-  if (denominator === 0) {
-    return 0;
-  }
-  return dotProduct(query, target) / denominator;
 }
 
