@@ -7,172 +7,182 @@ import {
   getSettings,
   listMessages,
   newConversation,
+  type Conversation,
   type Message,
+  type Persona,
 } from "@/lib/db";
 import { chatCompletion, type ChatCompletionMessage } from "@/lib/lmstudio";
 
 const HISTORY_LIMIT = 20;
 
-interface SendChatRequestBody {
-  conversationId?: number;
+interface SendChatPayload {
+  conversationId?: number | string;
   text?: string;
 }
 
-interface SearchResult {
-  chunkId: number;
-  documentId: number;
-  chunkIndex: number;
-  content: string;
-  score: number;
-}
+function buildSystemPrompt(persona: Persona): string {
+  const parts = [persona.jobDescription, persona.memoryPrompt]
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part && part.length > 0));
 
-interface SearchResponseBody {
-  query: string;
-  k: number;
-  results: SearchResult[];
-}
-
-function buildSystemPrompt(jobDescription: string, memoryPrompt: string): string {
-  const parts = [jobDescription?.trim(), memoryPrompt?.trim()].filter((part) => Boolean(part)) as string[];
-  if (parts.length === 0) {
-    return "You are a helpful assistant.";
+  if (!parts.length) {
+    return "You are a helpful AI assistant.";
   }
 
   return parts.join("\n\n");
 }
 
-function createContextMessage(results: SearchResult[]): ChatCompletionMessage | null {
-  if (results.length === 0) {
+function normalizeConversationTitle(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return "New Conversation";
+  }
+
+  if (trimmed.length <= 60) {
+    return trimmed;
+  }
+
+  return `${trimmed.slice(0, 57)}...`;
+}
+
+function parseConversationId(value: SendChatPayload["conversationId"]): number | null {
+  if (value === undefined || value === null || value === "") {
     return null;
   }
 
-  const snippets = results
-    .map((result, index) => `Snippet ${index + 1}:\n${result.content}`)
-    .join("\n\n");
-
-  return {
-    role: "assistant",
-    content: `The following contextual information was retrieved:\n\n${snippets}`,
-  } satisfies ChatCompletionMessage;
+  const parsed = Number.parseInt(String(value), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : Number.NaN;
 }
 
-function mapHistoryMessages(messages: Message[]): ChatCompletionMessage[] {
-  return messages.map((message) => ({
-    role: message.role,
-    content: message.content,
-  } satisfies ChatCompletionMessage));
-}
-
-async function performSearch(query: string, request: Request, k: number): Promise<SearchResult[]> {
-  if (!query.trim() || k <= 0) {
-    return [];
+async function runRagSearch(query: string, requestUrl: string, k?: number) {
+  const searchUrl = new URL("/api/search", requestUrl);
+  searchUrl.searchParams.set("q", query);
+  if (typeof k === "number" && Number.isFinite(k) && k > 0) {
+    searchUrl.searchParams.set("k", String(Math.floor(k)));
   }
 
   try {
-    const url = new URL("/api/search", request.url);
-    url.searchParams.set("q", query);
-    url.searchParams.set("k", String(k));
-
-    const response = await fetch(url.toString(), {
-      method: "GET",
-    });
-
+    const response = await fetch(searchUrl);
     if (!response.ok) {
-      console.error("Search request failed", response.status, await response.text());
-      return [];
+      console.warn("RAG search failed", response.status, response.statusText);
+      return { used: false as const, content: "" };
     }
 
-    const data = (await response.json()) as SearchResponseBody;
-    return Array.isArray(data.results) ? data.results : [];
+    const data = (await response.json()) as {
+      results?: Array<{ content?: string }>;
+    };
+
+    const snippets = Array.isArray(data.results)
+      ? data.results
+          .map((result) => result?.content?.trim())
+          .filter((content): content is string => Boolean(content && content.length > 0))
+      : [];
+
+    if (!snippets.length) {
+      return { used: false as const, content: "" };
+    }
+
+    const context = snippets.map((snippet) => `- ${snippet}`).join("\n");
+    return {
+      used: true as const,
+      content: `Relevant context:\n${context}`,
+    };
   } catch (error) {
-    console.error("Search request encountered an error", error);
-    return [];
+    console.warn("RAG search threw", error);
+    return { used: false as const, content: "" };
   }
+}
+
+function buildModelMessages(
+  history: Message[],
+  systemPrompt: string,
+  ragMessage: { used: boolean; content: string }
+): ChatCompletionMessage[] {
+  if (!history.length) {
+    return [{ role: "system", content: systemPrompt }];
+  }
+
+  const trimmedHistory = history.slice(-HISTORY_LIMIT);
+  const lastMessage = trimmedHistory.at(-1);
+
+  const priorMessages = lastMessage ? trimmedHistory.slice(0, -1) : trimmedHistory;
+
+  const messages: ChatCompletionMessage[] = [
+    { role: "system", content: systemPrompt },
+    ...priorMessages.map((message) => ({ role: message.role, content: message.content })),
+  ];
+
+  if (ragMessage.used && ragMessage.content) {
+    messages.push({ role: "assistant", content: ragMessage.content });
+  }
+
+  if (lastMessage) {
+    messages.push({ role: lastMessage.role, content: lastMessage.content });
+  }
+
+  return messages;
 }
 
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => null)) as SendChatRequestBody | null;
+  const payload = (await request.json().catch(() => ({}))) as SendChatPayload;
+  const text = typeof payload.text === "string" ? payload.text.trim() : "";
 
-  if (!body || typeof body.text !== "string" || !body.text.trim()) {
-    return NextResponse.json({ error: "Missing 'text' in request body." }, { status: 400 });
+  if (!text) {
+    return NextResponse.json({ error: "Message text is required." }, { status: 400 });
   }
 
-  const inputText = body.text.trim();
   const settings = getSettings();
-  const persona = getPersona();
+  const model = settings.modelText ?? process.env.DEFAULT_TEXT_MODEL ?? "";
+  const baseURL = settings.lmstudioBaseUrl ?? process.env.LMSTUDIO_BASE_URL ?? "";
 
-  if (!settings.modelText) {
+  if (!model) {
     return NextResponse.json({ error: "Text model is not configured." }, { status: 500 });
   }
 
-  if (!settings.lmstudioBaseUrl) {
+  if (!baseURL) {
     return NextResponse.json({ error: "LM Studio base URL is not configured." }, { status: 500 });
   }
 
-  let conversationId = body.conversationId;
-  if (typeof conversationId === "number") {
-    const existing = getConversation(conversationId);
+  const parsedConversationId = parseConversationId(payload.conversationId);
+  if (Number.isNaN(parsedConversationId)) {
+    return NextResponse.json({ error: "Invalid conversationId." }, { status: 400 });
+  }
+
+  let conversation: Conversation;
+
+  if (parsedConversationId) {
+    const existing = getConversation(parsedConversationId);
     if (!existing) {
       return NextResponse.json({ error: "Conversation not found." }, { status: 404 });
     }
+    conversation = existing;
   } else {
-    const title = inputText.length > 60 ? `${inputText.slice(0, 57)}...` : inputText;
-    const conversation = newConversation(title);
-    conversationId = conversation.id;
+    conversation = newConversation(normalizeConversationTitle(text));
   }
 
-  const previousMessages = listMessages(conversationId);
-  const userMessage = addMessage({
-    conversationId,
-    role: "user",
-    content: inputText,
-  });
+  addMessage({ conversationId: conversation.id, role: "user", content: text });
 
-  const historyLimit = Math.max(0, HISTORY_LIMIT - 1);
-  const limitedHistory = historyLimit > 0 ? previousMessages.slice(-historyLimit) : [];
-
-  const ragTopKValue =
-    typeof settings.ragTopK === "number" && Number.isFinite(settings.ragTopK) && settings.ragTopK > 0
-      ? Math.floor(settings.ragTopK)
-      : 5;
-
-  const ragResults = await performSearch(inputText, request, ragTopKValue);
-  const ragContextMessage = createContextMessage(ragResults);
-  const usedRag = Boolean(ragContextMessage);
-
-  const messagesForModel: ChatCompletionMessage[] = [
-    {
-      role: "system",
-      content: buildSystemPrompt(persona.jobDescription, persona.memoryPrompt),
-    },
-    ...mapHistoryMessages(limitedHistory),
-  ];
-
-  if (ragContextMessage) {
-    messagesForModel.push(ragContextMessage);
-  }
-
-  messagesForModel.push({
-    role: userMessage.role,
-    content: userMessage.content,
-  });
+  const persona = getPersona();
+  const systemPrompt = buildSystemPrompt(persona);
+  const ragMessage = await runRagSearch(text, request.url, settings.ragTopK ?? undefined);
+  const history = listMessages(conversation.id);
+  const messages = buildModelMessages(history, systemPrompt, ragMessage);
 
   try {
-    const completion = await chatCompletion(messagesForModel, settings.modelText, settings.lmstudioBaseUrl);
+    const completion = await chatCompletion(messages, model, baseURL, {
+      temperature: persona.temperature,
+    });
 
-    const assistantMessage = addMessage({
-      conversationId,
+    addMessage({
+      conversationId: conversation.id,
       role: "assistant",
       content: completion.text,
-      usedRag,
+      usedRag: ragMessage.used,
     });
 
-    return NextResponse.json({
-      conversationId,
-      text: assistantMessage.content,
-    });
+    return NextResponse.json({ conversationId: conversation.id, text: completion.text });
   } catch (error) {
-    console.error("Failed to complete chat message", error);
-    return NextResponse.json({ error: "Failed to generate assistant response." }, { status: 502 });
+    console.error("LM Studio completion failed", error);
+    return NextResponse.json({ error: "Failed to generate a reply." }, { status: 502 });
   }
 }

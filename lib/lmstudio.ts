@@ -1,21 +1,10 @@
-export interface ChatCompletionMessage {
+export type ChatCompletionMessage = {
   role: "system" | "user" | "assistant";
   content: string;
-}
+};
 
-interface ChatCompletionResponse {
+export interface ChatCompletionResult {
   text: string;
-}
-
-interface LMStudioChoice {
-  message?: {
-    role?: string;
-    content?: string;
-  };
-}
-
-interface LMStudioResponseBody {
-  choices?: LMStudioChoice[];
 }
 
 function normalizeBaseUrl(baseURL: string): string {
@@ -25,41 +14,48 @@ function normalizeBaseUrl(baseURL: string): string {
 export async function chatCompletion(
   messages: ChatCompletionMessage[],
   model: string,
-  baseURL: string
-): Promise<ChatCompletionResponse> {
-  if (!model) {
-    throw new Error("Missing model for chat completion request.");
+  baseURL: string,
+  options?: { temperature?: number }
+): Promise<ChatCompletionResult> {
+  if (!model?.trim()) {
+    throw new Error("LM Studio model is not configured.");
   }
 
-  if (!baseURL) {
-    throw new Error("Missing LM Studio base URL for chat completion request.");
+  if (!baseURL?.trim()) {
+    throw new Error("LM Studio base URL is not configured.");
   }
 
-  const endpoint = `${normalizeBaseUrl(baseURL)}/v1/chat/completions`;
+  const payload: Record<string, unknown> = {
+    model,
+    messages,
+  };
 
-  const response = await fetch(endpoint, {
+  if (options?.temperature !== undefined) {
+    payload.temperature = options.temperature;
+  }
+
+  const response = await fetch(`${normalizeBaseUrl(baseURL)}/v1/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      model,
-      messages,
-    }),
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`LM Studio request failed with status ${response.status}: ${errorBody}`);
+    const text = await response.text();
+    throw new Error(`LM Studio request failed: ${response.status} ${response.statusText} - ${text}`);
   }
 
-  const data = (await response.json()) as LMStudioResponseBody;
-  const firstChoice = data.choices?.[0];
-  const content = firstChoice?.message?.content;
+  const data = (await response.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
 
-  if (!content) {
-    throw new Error("LM Studio response did not include a message content.");
+  const text = data.choices?.[0]?.message?.content;
+
+  if (!text) {
+    throw new Error("LM Studio response did not include a message.");
   }
 
-  return { text: content };
+  return { text };
 }
