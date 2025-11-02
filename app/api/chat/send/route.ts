@@ -13,7 +13,7 @@ import {
 } from "@/lib/db";
 import { chatCompletion, type ChatCompletionMessage } from "@/lib/lmstudio";
 
-const HISTORY_LIMIT = 20;
+const HISTORY_EXCHANGE_LIMIT = 12;
 
 interface SendChatPayload {
   conversationId?: number | string;
@@ -93,6 +93,28 @@ async function runRagSearch(query: string, requestUrl: string, k?: number) {
   }
 }
 
+function limitHistoryToExchanges(history: Message[], exchangeLimit: number): Message[] {
+  if (exchangeLimit <= 0 || history.length === 0) {
+    return [];
+  }
+
+  const trimmed: Message[] = [];
+  let exchanges = 0;
+
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const message = history[index];
+    trimmed.push(message);
+    if (message.role === "user") {
+      exchanges += 1;
+      if (exchanges >= exchangeLimit) {
+        break;
+      }
+    }
+  }
+
+  return trimmed.reverse();
+}
+
 function buildModelMessages(
   history: Message[],
   systemPrompt: string,
@@ -102,10 +124,8 @@ function buildModelMessages(
     return [{ role: "system", content: systemPrompt }];
   }
 
-  const trimmedHistory = history.slice(-HISTORY_LIMIT);
-  const lastMessage = trimmedHistory.at(-1);
-
-  const priorMessages = lastMessage ? trimmedHistory.slice(0, -1) : trimmedHistory;
+  const lastMessage = history.at(-1);
+  const priorMessages = lastMessage ? history.slice(0, -1) : history;
 
   const messages: ChatCompletionMessage[] = [
     { role: "system", content: systemPrompt },
@@ -166,7 +186,8 @@ export async function POST(request: Request) {
   const systemPrompt = buildSystemPrompt(persona);
   const ragMessage = await runRagSearch(text, request.url, settings.ragTopK ?? undefined);
   const history = listMessages(conversation.id);
-  const messages = buildModelMessages(history, systemPrompt, ragMessage);
+  const limitedHistory = limitHistoryToExchanges(history, HISTORY_EXCHANGE_LIMIT);
+  const messages = buildModelMessages(limitedHistory, systemPrompt, ragMessage);
 
   try {
     const completion = await chatCompletion(messages, model, baseURL, {

@@ -10,6 +10,7 @@ import { embedTexts } from "@/lib/embeddings";
 export const runtime = "nodejs";
 
 const UPLOAD_DIRECTORY = path.join(process.cwd(), "uploads");
+const MAX_UPLOAD_SIZE_BYTES = 20 * 1024 * 1024; // 20 MB
 
 type SupportedFileKind = "pdf" | "docx" | "txt";
 
@@ -86,6 +87,13 @@ export async function POST(request: Request) {
 
     if (!file.size) {
       return NextResponse.json({ error: "Uploaded file is empty" }, { status: 400 });
+    }
+
+    if (file.size > MAX_UPLOAD_SIZE_BYTES) {
+      return NextResponse.json(
+        { error: "File is too large. Maximum supported size is 20MB." },
+        { status: 413 }
+      );
     }
 
     const fileKind = detectFileKind(file);
