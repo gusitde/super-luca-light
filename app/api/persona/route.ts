@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getPersona, savePersona } from "@/lib/db";
 
 interface PersonaPayload {
+  id?: unknown;
   name?: unknown;
   jobDescription?: unknown;
   memoryPrompt?: unknown;
@@ -10,6 +11,22 @@ interface PersonaPayload {
 
 function validatePayload(payload: PersonaPayload) {
   const errors: string[] = [];
+  const rawId = payload.id;
+  if (rawId !== undefined) {
+    const parsedId =
+      typeof rawId === "number"
+        ? rawId
+        : typeof rawId === "string" && rawId.trim().length > 0
+          ? Number.parseInt(rawId, 10)
+          : Number.NaN;
+
+    if (!Number.isFinite(parsedId)) {
+      errors.push("Persona id must be a valid number.");
+    } else if (parsedId !== 1) {
+      errors.push("Only a single persona is supported.");
+    }
+  }
+
   const name = typeof payload.name === "string" ? payload.name.trim() : "";
   const jobDescription =
     payload.jobDescription === undefined
