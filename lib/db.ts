@@ -2,6 +2,8 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { cosine } from './vector';
+
 const DB_DIRECTORY = path.join(process.cwd(), 'data');
 const DB_FILE = path.join(DB_DIRECTORY, 'app.db');
 
@@ -153,6 +155,20 @@ const listDocumentsStmt = db.prepare<DocumentRow>(
    ORDER BY datetime(created_at) DESC, id DESC`
 );
 
+const listDocumentsWithCountsStmt = db.prepare<DocumentWithChunkCountRow>(
+  `SELECT d.id,
+          d.filename,
+          d.mime_type,
+          d.size_bytes,
+          d.storage_path,
+          d.created_at,
+          COUNT(c.id) AS chunk_count
+     FROM documents AS d
+     LEFT JOIN doc_chunks AS c ON c.document_id = d.id
+    GROUP BY d.id
+    ORDER BY datetime(d.created_at) DESC, d.id DESC`
+);
+
 const insertChunkStmt = db.prepare(
   `INSERT INTO doc_chunks (document_id, chunk_index, content, embedding)
    VALUES (@document_id, @chunk_index, @content, @embedding)`
@@ -293,6 +309,18 @@ export function listDocuments(): DocumentRecord[] {
   return rows.map(mapDocumentRow);
 }
 
+export interface DocumentWithChunkCount extends DocumentRecord {
+  chunkCount: number;
+}
+
+export function listDocumentsWithChunkCounts(): DocumentWithChunkCount[] {
+  const rows = listDocumentsWithCountsStmt.all();
+  return rows.map((row) => ({
+    ...mapDocumentRow(row),
+    chunkCount: row.chunk_count,
+  }));
+}
+
 export function newConversation(title?: string): Conversation {
   const now = new Date().toISOString();
   const normalizedTitle = title?.trim().length ? title.trim() : 'New Conversation';
@@ -357,15 +385,20 @@ export function searchTopK(queryEmbedding: Float32Array | number[], k: number): 
   }
 
   const queryVector = toFloat32Array(queryEmbedding);
-  const queryNorm = vectorNorm(queryVector);
-  if (queryNorm === 0) {
+  let queryMagnitude = 0;
+  for (let i = 0; i < queryVector.length; i += 1) {
+    const value = queryVector[i];
+    queryMagnitude += value * value;
+  }
+
+  if (queryMagnitude === 0) {
     return [];
   }
 
   const rows = listChunksForSearchStmt.all();
   const scored = rows.map((row) => {
     const vector = deserializeEmbedding(row.embedding);
-    const similarity = cosineSimilarity(queryVector, vector, queryNorm);
+    const similarity = cosine(queryVector, vector);
     return {
       chunkId: row.id,
       documentId: row.document_id,
@@ -478,6 +511,10 @@ interface DocumentRow {
   created_at: string;
 }
 
+interface DocumentWithChunkCountRow extends DocumentRow {
+  chunk_count: number;
+}
+
 interface ConversationRow {
   id: number;
   title: string;
@@ -571,31 +608,5 @@ function serializeEmbedding(vector: Float32Array): Buffer {
 function deserializeEmbedding(buffer: Buffer): Float32Array {
   const arrayBuffer = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
   return new Float32Array(arrayBuffer);
-}
-
-function vectorNorm(vector: Float32Array): number {
-  let sumSquares = 0;
-  for (let i = 0; i < vector.length; i += 1) {
-    const value = vector[i];
-    sumSquares += value * value;
-  }
-  return Math.sqrt(sumSquares);
-}
-
-function dotProduct(a: Float32Array, b: Float32Array): number {
-  const length = Math.min(a.length, b.length);
-  let sum = 0;
-  for (let i = 0; i < length; i += 1) {
-    sum += a[i] * b[i];
-  }
-  return sum;
-}
-
-function cosineSimilarity(query: Float32Array, target: Float32Array, queryNorm?: number): number {
-  const denominator = (queryNorm ?? vectorNorm(query)) * vectorNorm(target);
-  if (denominator === 0) {
-    return 0;
-  }
-  return dotProduct(query, target) / denominator;
 }
 

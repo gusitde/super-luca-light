@@ -1,22 +1,4 @@
-"use client";
-
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
-
-type Persona = {
-  name: string;
-  jobDescription: string;
-  memoryPrompt: string;
-  temperature: number;
-};
-
-type PersonaResponse = {
-  persona: Persona;
-  errors?: string[];
-  error?: string;
-};
-
-const INPUT_BASE_CLASS =
-  "block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500";
+import Upload from "./components/Upload";
 
 export default function PersonaPage() {
   const [formState, setFormState] = useState({
@@ -170,98 +152,13 @@ export default function PersonaPage() {
     <section className="space-y-6">
       <div className="space-y-2">
         <h1 className="text-2xl font-semibold text-slate-900">Persona</h1>
-        <p className="text-sm text-slate-600">
-          Customize your assistant&apos;s identity, communication style, and guiding memory prompts.
+        <p className="text-slate-600">
+          Configure your assistant&apos;s persona, tone, and preferences. Upload background documents to
+          enrich its memory.
         </p>
       </div>
 
-      {error && (
-        <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {error}
-        </div>
-      )}
-
-      {success && (
-        <div className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-          {success}
-        </div>
-      )}
-
-      {isLoading ? (
-        <div className="text-sm text-slate-500">Loading persona…</div>
-      ) : (
-        <form className="space-y-6" onSubmit={handleSubmit} noValidate>
-          <div className="grid gap-4 sm:grid-cols-[minmax(0,320px)]">
-            <label className="space-y-1" htmlFor="persona-name">
-              <span className="text-sm font-medium text-slate-700">Name</span>
-              <input
-                id="persona-name"
-                name="name"
-                className={INPUT_BASE_CLASS}
-                placeholder="e.g. Research Assistant"
-                value={formState.name}
-                onChange={handleInputChange("name")}
-                required
-              />
-            </label>
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <label className="space-y-1" htmlFor="persona-job">
-              <span className="text-sm font-medium text-slate-700">Job Description</span>
-              <textarea
-                id="persona-job"
-                name="jobDescription"
-                className={`${INPUT_BASE_CLASS} min-h-[200px] resize-vertical`}
-                placeholder="Describe responsibilities, domain expertise, and tone."
-                value={formState.jobDescription}
-                onChange={handleInputChange("jobDescription")}
-              />
-            </label>
-
-            <label className="space-y-1" htmlFor="persona-memory">
-              <span className="text-sm font-medium text-slate-700">Memory Prompt</span>
-              <textarea
-                id="persona-memory"
-                name="memoryPrompt"
-                className={`${INPUT_BASE_CLASS} min-h-[200px] resize-vertical`}
-                placeholder="Outline persistent memories, context, or constraints for the assistant."
-                value={formState.memoryPrompt}
-                onChange={handleInputChange("memoryPrompt")}
-              />
-            </label>
-          </div>
-
-          <div className="max-w-xs space-y-1">
-            <label className="text-sm font-medium text-slate-700" htmlFor="persona-temperature">
-              Temperature
-            </label>
-            <input
-              id="persona-temperature"
-              name="temperature"
-              type="number"
-              min={0}
-              max={1}
-              step={0.05}
-              className={INPUT_BASE_CLASS}
-              value={formState.temperature}
-              onChange={handleInputChange("temperature")}
-              required
-            />
-            <p className="text-xs text-slate-500">{temperatureHelp}</p>
-          </div>
-
-          <div>
-            <button
-              type="submit"
-              className="inline-flex items-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:cursor-not-allowed disabled:bg-indigo-300"
-              disabled={isSubmitDisabled}
-            >
-              {isSaving ? "Saving…" : "Save"}
-            </button>
-          </div>
-        </form>
-      )}
+      <Upload />
     </section>
   );
 }
