@@ -3,6 +3,8 @@
 import type { FormEvent } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { PushToTalk } from "./components/PushToTalk";
+
 interface ConversationSummary {
   id: number;
   title: string;
@@ -42,15 +44,29 @@ export default function ChatPage() {
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [speakError, setSpeakError] = useState<string | null>(null);
 
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const selectedConversationRef = useRef<number | null>(null);
   const pendingMessagesRef = useRef<number | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUrlRef = useRef<string | null>(null);
 
   const selectedConversation = useMemo(
     () => conversations.find((conversation) => conversation.id === selectedConversationId) ?? null,
     [conversations, selectedConversationId]
   );
+
+  const lastAssistantMessageId = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role === "assistant") {
+        return message.id;
+      }
+    }
+    return null;
+  }, [messages]);
 
   useEffect(() => {
     selectedConversationRef.current = selectedConversationId;
@@ -123,14 +139,43 @@ export default function ChatPage() {
     }
   }, [messages]);
 
-  const handleSend = useCallback(
-    async (event?: FormEvent<HTMLFormElement>) => {
-      event?.preventDefault();
+  useEffect(() => {
+    setSpeakError(null);
+    setIsSpeaking(false);
+    const audioElement = audioRef.current;
+    if (audioElement) {
+      audioElement.pause();
+      audioElement.currentTime = 0;
+      audioElement.removeAttribute("src");
+      audioElement.load();
+    }
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current);
+      audioUrlRef.current = null;
+    }
+  }, [lastAssistantMessageId]);
+
+  useEffect(() => {
+    return () => {
+      const audioElement = audioRef.current;
+      if (audioElement) {
+        audioElement.pause();
+        audioElement.removeAttribute("src");
+      }
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current);
+        audioUrlRef.current = null;
+      }
+    };
+  }, []);
+
+  const submitMessage = useCallback(
+    async (messageText: string) => {
       if (isSending) {
         return;
       }
 
-      const trimmed = input.trim();
+      const trimmed = messageText.trim();
       if (!trimmed) {
         return;
       }
@@ -165,7 +210,94 @@ export default function ChatPage() {
         setIsSending(false);
       }
     },
-    [fetchConversations, fetchMessages, input, isSending, selectedConversationId]
+    [fetchConversations, fetchMessages, isSending, selectedConversationId]
+  );
+
+  const handleSend = useCallback(
+    async (event?: FormEvent<HTMLFormElement>) => {
+      event?.preventDefault();
+      await submitMessage(input);
+    },
+    [input, submitMessage]
+  );
+
+  const handleTranscription = useCallback(
+    async (text: string) => {
+      if (isSending) {
+        return;
+      }
+      const trimmed = text.trim();
+      if (!trimmed) {
+        return;
+      }
+      setInput(trimmed);
+      await submitMessage(trimmed);
+    },
+    [isSending, submitMessage]
+  );
+
+  const handleSpeakReply = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      const audioElement = audioRef.current;
+      if (!audioElement) {
+        return;
+      }
+
+      if (!audioElement.paused) {
+        audioElement.pause();
+        audioElement.currentTime = 0;
+      }
+
+      setSpeakError(null);
+      setIsSpeaking(true);
+
+      try {
+        const response = await fetch("/api/speech/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: trimmed }),
+        });
+
+        if (!response.ok) {
+          const errorPayload = (await response.json().catch(() => null)) as { error?: string } | null;
+          throw new Error(errorPayload?.error ?? "Unable to synthesize speech.");
+        }
+
+        const audioBuffer = await response.arrayBuffer();
+        const blob = new Blob([audioBuffer], { type: "audio/mpeg" });
+        if (audioUrlRef.current) {
+          URL.revokeObjectURL(audioUrlRef.current);
+        }
+        const url = URL.createObjectURL(blob);
+        audioUrlRef.current = url;
+        audioElement.src = url;
+        audioElement.onended = () => {
+          setIsSpeaking(false);
+          if (audioUrlRef.current) {
+            URL.revokeObjectURL(audioUrlRef.current);
+            audioUrlRef.current = null;
+          }
+        };
+        audioElement.onerror = () => {
+          setIsSpeaking(false);
+          if (audioUrlRef.current) {
+            URL.revokeObjectURL(audioUrlRef.current);
+            audioUrlRef.current = null;
+          }
+        };
+        await audioElement.play();
+      } catch (err) {
+        console.error(err);
+        setIsSpeaking(false);
+        setSpeakError(err instanceof Error ? err.message : "Unable to play speech.");
+      }
+    },
+    []
   );
 
   const handleConversationSelect = useCallback((conversationId: number) => {
@@ -259,6 +391,21 @@ export default function ChatPage() {
                         )}
                       </div>
                       <p className="whitespace-pre-wrap">{message.content}</p>
+                      {!isUser && message.id === lastAssistantMessageId && (
+                        <div className="mt-3 flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void handleSpeakReply(message.content);
+                            }}
+                            className="inline-flex items-center justify-center rounded-md border border-slate-300 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+                            disabled={isSpeaking}
+                          >
+                            {isSpeaking ? "Speaking…" : "Speak Reply"}
+                          </button>
+                          {speakError && <span className="text-xs text-red-500">{speakError}</span>}
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
@@ -279,16 +426,20 @@ export default function ChatPage() {
             onChange={(event) => setInput(event.target.value)}
             disabled={isSending}
           />
-          <div className="mt-3 flex justify-end">
-            <button
-              type="submit"
-              className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
-              disabled={isSending}
-            >
-              {isSending ? "Sending…" : "Send"}
-            </button>
+          <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <PushToTalk onTranscription={handleTranscription} disabled={isSending} />
+            <div className="flex justify-end">
+              <button
+                type="submit"
+                className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-70"
+                disabled={isSending}
+              >
+                {isSending ? "Sending…" : "Send"}
+              </button>
+            </div>
           </div>
         </form>
+        <audio ref={audioRef} className="hidden" />
       </div>
     </section>
   );
