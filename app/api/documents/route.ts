@@ -1,21 +1,27 @@
 import { NextResponse } from "next/server";
 
-type DocumentPayload = {
-  title?: string;
-  content?: string;
-};
+import { listDocumentsWithChunkCounts } from "@/lib/db";
+
+export const dynamic = "force-dynamic";
 
 export async function GET() {
+  const documents = listDocumentsWithChunkCounts().map((document) => ({
+    id: document.id,
+    filename: document.filename,
+    mimeType: document.mimeType,
+    sizeBytes: document.sizeBytes,
+    storagePath: document.storagePath,
+    createdAt: document.createdAt,
+    chunkCount: document.chunkCount,
+  }));
+
   return NextResponse.json({
-    message: "Documents endpoint is ready",
-    documents: []
+    documents,
   });
 }
 
-export async function POST(request: Request) {
-  const payload = (await request.json().catch(() => ({}))) as DocumentPayload;
+export async function POST() {
   return NextResponse.json({
-    message: "Document uploaded (mock)",
-    document: payload
-  });
+    error: "Use /api/documents/upload to create documents",
+  }, { status: 405 });
 }

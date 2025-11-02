@@ -153,6 +153,20 @@ const listDocumentsStmt = db.prepare<DocumentRow>(
    ORDER BY datetime(created_at) DESC, id DESC`
 );
 
+const listDocumentsWithCountsStmt = db.prepare<DocumentWithChunkCountRow>(
+  `SELECT d.id,
+          d.filename,
+          d.mime_type,
+          d.size_bytes,
+          d.storage_path,
+          d.created_at,
+          COUNT(c.id) AS chunk_count
+     FROM documents AS d
+     LEFT JOIN doc_chunks AS c ON c.document_id = d.id
+    GROUP BY d.id
+    ORDER BY datetime(d.created_at) DESC, d.id DESC`
+);
+
 const insertChunkStmt = db.prepare(
   `INSERT INTO doc_chunks (document_id, chunk_index, content, embedding)
    VALUES (@document_id, @chunk_index, @content, @embedding)`
@@ -291,6 +305,18 @@ export function addChunks(chunks: NewChunkInput[]): DocumentChunk[] {
 export function listDocuments(): DocumentRecord[] {
   const rows = listDocumentsStmt.all();
   return rows.map(mapDocumentRow);
+}
+
+export interface DocumentWithChunkCount extends DocumentRecord {
+  chunkCount: number;
+}
+
+export function listDocumentsWithChunkCounts(): DocumentWithChunkCount[] {
+  const rows = listDocumentsWithCountsStmt.all();
+  return rows.map((row) => ({
+    ...mapDocumentRow(row),
+    chunkCount: row.chunk_count,
+  }));
 }
 
 export function newConversation(title?: string): Conversation {
@@ -476,6 +502,10 @@ interface DocumentRow {
   size_bytes: number;
   storage_path: string;
   created_at: string;
+}
+
+interface DocumentWithChunkCountRow extends DocumentRow {
+  chunk_count: number;
 }
 
 interface ConversationRow {
